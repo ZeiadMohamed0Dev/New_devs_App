@@ -1,29 +1,45 @@
+
 import json
-import redis.asyncio as redis
-from typing import Dict, Any
 import os
+from decimal import Decimal
+from typing import Any, Dict
 
-# Initialize Redis client (typically configured centrally).
-redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+import redis.asyncio as redis
 
-async def get_revenue_summary(property_id: str, tenant_id: str) -> Dict[str, Any]:
-    """
-    Fetches revenue summary, utilizing caching to improve performance.
-    """
-    cache_key = f"revenue:{property_id}"
-    
-    # Try to get from cache
+redis_client = redis.Redis.from_url(
+    os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+    decode_responses=True,
+)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+async def get_revenue_summary(
+    property_id: str,
+    tenant_id: str,
+) -> Dict[str, Any]:
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
+
+    # Keep each tenant's cached revenue separate.
+    cache_key = f"revenue:{tenant_id}:{property_id}"
+
     cached = await redis_client.get(cache_key)
-    if cached:
+    if cached is not None:
         return json.loads(cached)
-    
-    # Revenue calculation is delegated to the reservation service.
+
     from app.services.reservations import calculate_total_revenue
-    
-    # Calculate revenue
+
     result = await calculate_total_revenue(property_id, tenant_id)
-    
-    # Cache the result for 5 minutes
-    await redis_client.setex(cache_key, 300, json.dumps(result))
-    
+
+    await redis_client.setex(
+        cache_key,
+        300,
+        json.dumps(result, default=_json_default),
+    )
+
     return result
